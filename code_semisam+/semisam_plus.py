@@ -1,6 +1,6 @@
 
 from segment_anything import sam_model_registry
-
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -115,29 +115,42 @@ def finetune_model_predict2D_mask(img2D, gt2D, sam_model_tune, device='cuda'):
 
     return pred_batch
 
-def semisam_branch(image_batch, mask, generalist='SAM', prompt='mask', device='cuda'):
-    """
-    Cổng kết nối 2D. 
-    generalist: 'SAM' hoặc 'MedSAM'
-    """
-    if generalist == 'SAM':
-        checkpoint_path = '../ckpt/sam_vit_b_01ec14.pth'
-        model_type = 'vit_b'
-    elif generalist == 'MedSAM':
-        checkpoint_path = '../ckpt/medsam_vit_b.pth'
-        model_type = 'vit_b'
-    else:
-        # Fallback cho các trường hợp khác
-        checkpoint_path = '../ckpt/sam_vit_b_01ec14.pth'
-        model_type = 'vit_b'
 
-    # Khởi tạo SAM 2D
-    sam_model_tune = sam_model_registry[model_type](checkpoint=checkpoint_path).to(device)
-    sam_model_tune.eval()
+# Định nghĩa class để thỏa mãn điều kiện tham số (args) trong build_sam.py
+class SamBuildArgs:
+    def __init__(self, image_size, checkpoint, encoder_adapter):
+        self.image_size = image_size
+        self.sam_checkpoint = checkpoint
+        self.encoder_adapter = encoder_adapter
+
+
+def semisam_branch(image_batch, mask, sam_model_tune, prompt='mask', device='cuda'):
+    # # Đảm bảo đường dẫn này khớp 100% với file trên Colab của bạn
+    # # Bạn đã xác nhận là: ./ckpt/sam-med2d_b.pth
+    # checkpoint_path = './ckpt/sam-med2d_b.pth' 
+    
+    # # Kiểm tra sự tồn tại của file để tránh lỗi văng ngang
+    # if not os.path.exists(checkpoint_path):
+    #     print(f"Warning: Không tìm thấy {checkpoint_path}, đang thử tìm trong thư mục cha...")
+    #     checkpoint_path = checkpoint_path.replace("./", "../")
+
+    # model_type = 'vit_b' 
+
+    # # Khởi tạo Object tham số
+    # # image_size=256 khớp với BTXRD.py
+    # # encoder_adapter=True vì SAM-Med2D có dùng Adapter
+    # build_args = SamBuildArgs(image_size=256, checkpoint=checkpoint_path, encoder_adapter=True)
+    
+    # # Khởi tạo mô hình qua registry
+    # # build_sam_vit_b(build_args) sẽ được gọi bên trong này
+    # sam_model_tune = sam_model_registry[model_type](build_args).to(device)
+    
+    # # Thiết lập chế độ Eval để không cập nhật batch norm của SAM khi train Specialist
+    # sam_model_tune.eval()
 
     unc = []
     if prompt == 'point':
-        samseg_mask = finetune_model_predict2D_unc( # Sử dụng bản unc nhưng lấy mask
+        samseg_mask, _ = finetune_model_predict2D_unc( # Sử dụng bản unc nhưng lấy mask
             image_batch, mask, sam_model_tune, device=device,
             click_method=get_next_click2D_torch_ritm, num_clicks=10)[0]
     elif prompt == 'mask':

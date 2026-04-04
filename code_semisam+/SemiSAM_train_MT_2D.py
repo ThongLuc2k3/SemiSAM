@@ -96,6 +96,19 @@ def train(args, snapshot_path):
     model = create_model()
     ema_model = create_model(ema=True)
 
+    from semisam_plus import SamBuildArgs
+    from segment_anything import sam_model_registry
+
+    print("------- ĐANG NẠP MÔ HÌNH SAM -------")
+    build_args = SamBuildArgs(
+       image_size=256, 
+       checkpoint='./ckpt/sam-med2d_b.pth', 
+       encoder_adapter=True
+    )
+
+    sam_model_obj = sam_model_registry['vit_b'](build_args).cuda()
+    sam_model_obj.eval()
+
     # Sử dụng bộ dataset BTXRD cho ảnh X-quang
     db_train = BTXRD(base_dir=train_data_path,
                          split='train',
@@ -163,7 +176,7 @@ def train(args, snapshot_path):
 
             # semisam_branch: Bạn cần đảm bảo generalist chuyển sang 'SAM' hoặc 'MedSAM' (2D)
             # Truyền volume_batch (B, 1, H, W) và output map
-            samseg_mask, uncsam = semisam_branch(volume_batch, outputs_soft[:,1:2,:,:], generalist='SAM', prompt=args.prompt)
+            samseg_mask, uncsam = semisam_branch(volume_batch, outputs_soft[:,1:2,:,:],  sam_model_tune=sam_model_obj, prompt=args.prompt)
             
             samseg_soft = torch.cat((1 - samseg_mask, samseg_mask), dim=1)
 
@@ -179,7 +192,7 @@ def train(args, snapshot_path):
             sam_con_loss = 0.1 * consistency_weight_sam * sam_consistency
 
             loss = supervised_loss + consistency_weight * consistency_loss + sam_con_loss
-            
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -190,6 +203,14 @@ def train(args, snapshot_path):
                 param_group['lr'] = lr_
 
             iter_num = iter_num + 1
+
+            # THAY iterator.set_description BẰNG LỆNH PRINT NÀY:
+            print(f"Iter {iter_num}/{max_iterations} | "
+                  f"Loss: {loss.item():.4f} | "
+                  f"Dice: {loss_dice.item():.4f} | "
+                  f"CE: {loss_ce.item():.4f} | "
+                  f"SAM: {sam_con_loss.item():.4f} | "
+                  f"LR: {optimizer.param_groups[0]['lr']:.6f}")
             
             # Logging
             writer.add_scalar('info/total_loss', loss, iter_num)

@@ -7,15 +7,14 @@ import itertools
 from torch.utils.data.sampler import Sampler
 
 class BTXRD(Dataset):
-    """ BTXRD Dataset cho ảnh X-quang xương 2D """
     def __init__(self, base_dir=None, split='train', num=None, transform=None):
         self._base_dir = base_dir
         self.transform = transform
         self.split = split
+        # Kích thước mục tiêu cho luận văn của bạn
+        self.target_size = (256, 256) 
         
-        # Đường dẫn file danh sách
         list_path = os.path.join(self._base_dir, 'train_list.txt' if split == 'train' else 'val.txt')
-        
         with open(list_path, 'r') as f:
             self.image_list = [line.strip() for line in f.readlines() if line.strip()]
             
@@ -28,19 +27,27 @@ class BTXRD(Dataset):
 
     def __getitem__(self, idx):
         image_name = self.image_list[idx]
-        
-        # Đọc ảnh và mask (giả định đuôi .png, nếu là .jpg bạn hãy sửa lại)
         img_path = os.path.join(self._base_dir, "images", image_name + ".png")
         lab_path = os.path.join(self._base_dir, "masks", image_name + ".png")
         
-        image = np.array(Image.open(img_path).convert('L')) / 255.0 # Normalize 0-1
-        label = np.array(Image.open(lab_path).convert('L'))
-        label[label > 0] = 1 # Đảm bảo mask là nhị phân 0, 1
+        # Đọc ảnh
+        image = Image.open(img_path).convert('L')
+        label = Image.open(lab_path).convert('L')
+
+        # QUAN TRỌNG: Resize về 256x256 để các tensor cùng kích thước
+        image = image.resize(self.target_size, Image.BILINEAR)
+        label = label.resize(self.target_size, Image.NEAREST) # Mask dùng Nearest để giữ giá trị 0, 1
+
+        image = np.array(image) / 255.0
+        label = np.array(label)
+        label[label > 0] = 1 
 
         sample = {'image': image, 'label': label.astype(np.uint8)}
+        
         if self.transform:
             sample = self.transform(sample)
         return sample
+        
 
 class CenterCrop(object):
     def __init__(self, output_size):
@@ -146,11 +153,12 @@ class CreateOnehotLabel(object):
         return {'image': image, 'label': label, 'onehot_label': onehot_label}
 
 
+# Nhớ cập nhật lại ToTensor trong file BTXRD.py luôn nhé
 class ToTensor(object):
-    """ Chuyển về Tensor 2D (1, H, W) """
+
     def __call__(self, sample):
         image = sample['image']
-        image = image.reshape(1, image.shape[0], image.shape[1]).astype(np.float32)
+        image = image[np.newaxis, ...].astype(np.float32)
         return {'image': torch.from_numpy(image), 
                 'label': torch.from_numpy(sample['label']).long()}
 
