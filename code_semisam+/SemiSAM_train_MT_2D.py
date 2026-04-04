@@ -176,18 +176,28 @@ def train(args, snapshot_path):
 
             # semisam_branch: Bạn cần đảm bảo generalist chuyển sang 'SAM' hoặc 'MedSAM' (2D)
             # Truyền volume_batch (B, 1, H, W) và output map
-            samseg_mask, uncsam = semisam_branch(volume_batch, outputs_soft[:,1:2,:,:],  sam_model_tune=sam_model_obj, prompt=args.prompt)
-            
+            # 1. Gọi SAM (Chỉ cho phần unlabeled) -> samseg_mask lúc này có size 2
+            samseg_mask, uncsam = semisam_branch(
+                volume_batch[args.labeled_bs:], 
+                outputs_soft[args.labeled_bs:, 1:2, :, :], 
+                sam_model_tune=sam_model_obj, 
+                prompt=args.prompt
+            )
+            # 2. Tạo soft mask (size 2)
             samseg_soft = torch.cat((1 - samseg_mask, samseg_mask), dim=1)
 
+            # 3. Tính toán Loss
             if args.prompt == 'unc':
-                sam_consistency_dist = (outputs_soft[args.labeled_bs:] - samseg_soft[args.labeled_bs:])**2
+                # outputs_soft[args.labeled_bs:] có size 2
+                # samseg_soft CŨNG ĐÃ CÓ size 2 rồi, nên KHÔNG ĐƯỢC cắt lát nữa
+                sam_consistency_dist = (outputs_soft[args.labeled_bs:] - samseg_soft)**2
+                
+                # uncsam cũng có size 2, các phép tính phía sau sẽ khớp hoàn toàn
                 sam_consistency = torch.mean(
                     sam_consistency_dist * uncsam) / (torch.mean(uncsam) + 1e-8) + torch.mean(uncsam)
             else:
                 sam_consistency = torch.mean(
-                    (outputs_soft[args.labeled_bs:] - samseg_soft[args.labeled_bs:])**2)
-
+                    (outputs_soft[args.labeled_bs:] - samseg_soft)**2)
             consistency_weight_sam = get_current_consistency_weight((max_iterations - iter_num)//150)
             sam_con_loss = 0.1 * consistency_weight_sam * sam_consistency
 

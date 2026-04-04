@@ -1,4 +1,5 @@
 data/
+Tlynx/
 ckpt/
 *.pth
 *.pt
