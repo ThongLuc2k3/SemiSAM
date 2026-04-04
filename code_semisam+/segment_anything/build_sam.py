@@ -17,6 +17,7 @@ def build_sam_vit_h(args):
         encoder_global_attn_indexes=[7, 15, 23, 31],
         image_size=args.image_size,
         checkpoint=args.sam_checkpoint,
+        encoder_adapter=args.encoder_adapter, # Dùng biến này từ args
     )
 
 
@@ -31,6 +32,7 @@ def build_sam_vit_l(args):
         encoder_global_attn_indexes=[5, 11, 17, 23],
         image_size=args.image_size,
         checkpoint=args.sam_checkpoint,
+        encoder_adapter=args.encoder_adapter, # Dùng biến này từ args
     )
 
 
@@ -42,7 +44,7 @@ def build_sam_vit_b(args):
         encoder_global_attn_indexes=[2, 5, 8, 11],
         image_size=args.image_size,
         checkpoint=args.sam_checkpoint,
-
+        encoder_adapter=args.encoder_adapter, # Dùng biến này từ args
     )
 
 
@@ -61,6 +63,7 @@ def _build_sam(
     encoder_global_attn_indexes,
     image_size,
     checkpoint,
+    encoder_adapter, # Thống nhất dùng 1 tên biến này
 ):
     prompt_embed_dim = 256
     image_size = image_size
@@ -80,6 +83,7 @@ def _build_sam(
             global_attn_indexes=encoder_global_attn_indexes,
             window_size=14,
             out_chans=prompt_embed_dim,
+            adapter_train=encoder_adapter, # Khớp với class ImageEncoderViT bạn gửi
         ),
         prompt_encoder=PromptEncoder(
             embed_dim=prompt_embed_dim,
@@ -105,10 +109,11 @@ def _build_sam(
     sam.train()
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f)
+            state_dict = torch.load(f, map_location="cpu")
         try:
             if 'model' in state_dict.keys():
-                sam.load_state_dict(state_dict['model'])
+                # Dùng strict=False để tránh lỗi khi có/không có Adapter
+                sam.load_state_dict(state_dict['model'], strict=False)
             else:
                 sam.load_state_dict(state_dict)
         except:

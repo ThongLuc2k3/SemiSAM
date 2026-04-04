@@ -1,5 +1,6 @@
 from .build_sam3D import *
-from utils import *
+# from utils import *
+from .utils import * #"Chỉ lấy những thứ trong thư mục utils nội bộ của SAM thôi, đừng tìm ở ngoài".
 from .build_sam import (
     build_sam,
     build_sam_vit_h,

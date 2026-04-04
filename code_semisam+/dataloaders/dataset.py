@@ -5,7 +5,7 @@ import random
 import numpy as np
 from glob import glob
 from torch.utils.data import Dataset
-import h5py
+# import h5py  # Đã loại bỏ do dùng ảnh .png/.jpg
 from scipy.ndimage.interpolation import zoom
 from torchvision import transforms
 import itertools
@@ -38,15 +38,18 @@ class BaseDataSets(Dataset):
             ops_strong
         ), "For using CTAugment learned policies, provide both weak and strong batch augmentation policy"
 
+        # Đọc danh sách file (BTXRD thường dùng train_list.txt hoặc val.txt)
         if self.split == "train":
-            with open(self._base_dir + "/train_slices.list", "r") as f1:
-                self.sample_list = f1.readlines()
-            self.sample_list = [item.replace("\n", "") for item in self.sample_list]
-
+            list_path = self._base_dir + "/train_list.txt"
         elif self.split == "val":
-            with open(self._base_dir + "/val.list", "r") as f:
-                self.sample_list = f.readlines()
-            self.sample_list = [item.replace("\n", "") for item in self.sample_list]
+            list_path = self._base_dir + "/val.txt"
+
+        if os.path.exists(list_path):
+            with open(list_path, "r") as f:
+                self.sample_list = [line.strip() for line in f.readlines() if line.strip()]
+        else:
+            print(f"Warning: {list_path} not found!")
+
         if num is not None and self.split == "train":
             self.sample_list = self.sample_list[:num]
         print("total {} samples".format(len(self.sample_list)))
@@ -56,13 +59,22 @@ class BaseDataSets(Dataset):
 
     def __getitem__(self, idx):
         case = self.sample_list[idx]
-        if self.split == "train":
-            h5f = h5py.File(self._base_dir + "/data/slices/{}.h5".format(case), "r")
-        else:
-            h5f = h5py.File(self._base_dir + "/data/{}.h5".format(case), "r")
-        image = h5f["image"][:]
-        label = h5f["label"][:]
+        
+        # Sửa logic load ảnh từ .h5 sang .png/.jpg cho BTXRD
+        img_path = os.path.join(self._base_dir, "images", case + ".png") # Mặc định .png
+        lab_path = os.path.join(self._base_dir, "mask", case + ".png")
+
+        # Đọc ảnh bằng PIL và chuyển sang numpy
+        if not os.path.exists(img_path):
+            img_path = img_path.replace(".png", ".jpg") # Thử với đuôi .jpg nếu .png ko có
+            lab_path = lab_path.replace(".png", ".jpg")
+
+        image = np.array(Image.open(img_path).convert('L')) / 255.0 # Chuẩn hóa 2D
+        label = np.array(Image.open(lab_path).convert('L'))
+        label[label > 0] = 1 # Đảm bảo label nhị phân
+
         sample = {"image": image, "label": label}
+        
         if self.split == "train":
             if None not in (self.ops_weak, self.ops_strong):
                 sample = self.transform(sample, self.ops_weak, self.ops_strong)
@@ -96,8 +108,7 @@ def color_jitter(image):
     if not torch.is_tensor(image):
         np_to_tensor = transforms.ToTensor()
         image = np_to_tensor(image)
-
-    # s is the strength of color distortion.
+        # s is the strength of color distortion.
     s = 1.0
     jitter = transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
     return jitter(image)
@@ -114,11 +125,11 @@ class CTATransform(object):
         label = self.resize(label)
         to_tensor = transforms.ToTensor()
 
-        # fix dimensions
+        # Fix dimensions cho 2D: (1, H, W)
         image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(label.astype(np.uint8))
 
-        # apply augmentations
+        # Apply augmentations (ToPILImage hỗ trợ tốt 2D)
         image_weak = augmentations.cta_apply(transforms.ToPILImage()(image), ops_weak)
         image_strong = augmentations.cta_apply(image_weak, ops_strong)
         label_aug = augmentations.cta_apply(transforms.ToPILImage()(label), ops_weak)
@@ -149,17 +160,20 @@ class RandomGenerator(object):
         self.output_size = output_size
 
     def __call__(self, sample):
-        image, label = sample["image"], sample["label"]
-        # ind = random.randrange(0, img.shape[0])
+         # ind = random.randrange(0, img.shape[0])
         # image = img[ind, ...]
         # label = lab[ind, ...]
+        image, label = sample["image"], sample["label"]
         if random.random() > 0.5:
             image, label = random_rot_flip(image, label)
         elif random.random() > 0.5:
             image, label = random_rotate(image, label)
+        
         x, y = image.shape
+        # Zoom 2D
         image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=0)
         label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+        
         image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(label.astype(np.uint8))
         sample = {"image": image, "label": label}
@@ -180,11 +194,12 @@ class WeakStrongAugment(object):
         image, label = sample["image"], sample["label"]
         image = self.resize(image)
         label = self.resize(label)
-        # weak augmentation is rotation / flip
+             # weak augmentation is rotation / flip
         image_weak, label = random_rot_flip(image, label)
-        # strong augmentation is color jitter
+         # strong augmentation is color jitter
         image_strong = color_jitter(image_weak).type("torch.FloatTensor")
-        # fix dimensions
+        
+        # Fix dimensions cho 2D
         image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
         image_weak = torch.from_numpy(image_weak.astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(label.astype(np.uint8))
@@ -215,7 +230,7 @@ class TwoStreamBatchSampler(Sampler):
         self.secondary_indices = secondary_indices
         self.secondary_batch_size = secondary_batch_size
         self.primary_batch_size = batch_size - secondary_batch_size
-
+        
         assert len(self.primary_indices) >= self.primary_batch_size > 0
         assert len(self.secondary_indices) >= self.secondary_batch_size > 0
 
@@ -247,7 +262,6 @@ def iterate_eternally(indices):
 
 
 def grouper(iterable, n):
-    "Collect data into fixed-length chunks or blocks"
-    # grouper('ABCDEFG', 3) --> ABC DEF"
+
     args = [iter(iterable)] * n
     return zip(*args)

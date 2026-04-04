@@ -95,6 +95,27 @@ class unetConv2(nn.Module):
 
         return x
 
+# Thêm lớp này vào networks/utils.py để unet_2D gọi được
+class UnetUp2_CT(nn.Module):
+    def __init__(self, in_size, out_size, is_batchnorm=True):
+        super(UnetUp2_CT, self).__init__()
+        # Chuyển UnetConv3 thành unetConv2 (đã có sẵn trong file của bạn)
+        self.conv = unetConv2(in_size + out_size, out_size, is_batchnorm, n=2, ks=3, padding=1)
+        # Chuyển Upsample trilinear (3D) thành bilinear (2D)
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+
+        for m in self.children():
+            if m.__class__.__name__.find('unetConv2') != -1: continue
+            init_weights(m, init_type='kaiming')
+
+    def forward(self, inputs1, inputs2):
+        outputs2 = self.up(inputs2)
+        # Padding 2D nếu kích thước lẻ
+        offset0 = outputs2.size()[2] - inputs1.size()[2]
+        offset1 = outputs2.size()[3] - inputs1.size()[3]
+        padding = [offset1 // 2, offset1 - offset1 // 2, offset0 // 2, offset0 - offset0 // 2]
+        outputs1 = F.pad(inputs1, padding)
+        return self.conv(torch.cat([outputs1, outputs2], 1))
 
 class UnetConv3(nn.Module):
     def __init__(self, in_size, out_size, is_batchnorm, kernel_size=(3,3,1), padding_size=(1,1,0), init_stride=(1,1,1)):
@@ -276,29 +297,62 @@ class UnetUp3_CT(nn.Module):
         return self.conv(torch.cat([outputs1, outputs2], 1))
 
 
-# Squeeze-and-Excitation Network
-class SqEx(nn.Module):
+# # Squeeze-and-Excitation Network
+# class SqEx(nn.Module):
 
+#     def __init__(self, n_features, reduction=6):
+#         super(SqEx, self).__init__()
+
+#         if n_features % reduction != 0:
+#             raise ValueError('n_features must be divisible by reduction (default = 4)')
+
+#         self.linear1 = nn.Linear(n_features, n_features // reduction, bias=False)
+#         self.nonlin1 = nn.ReLU(inplace=True)
+#         self.linear2 = nn.Linear(n_features // reduction, n_features, bias=False)
+#         self.nonlin2 = nn.Sigmoid()
+
+#     def forward(self, x):
+
+#         y = F.avg_pool3d(x, kernel_size=x.size()[2:5])
+#         y = y.permute(0, 2, 3, 4, 1)
+#         y = self.nonlin1(self.linear1(y))
+#         y = self.nonlin2(self.linear2(y))
+#         y = y.permute(0, 4, 1, 2, 3)
+#         y = x * y
+#         return y
+
+# Sửa lớp SqEx sang 2D
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class SqEx(nn.Module):
+    
     def __init__(self, n_features, reduction=6):
         super(SqEx, self).__init__()
 
         if n_features % reduction != 0:
-            raise ValueError('n_features must be divisible by reduction (default = 4)')
+            raise ValueError('n_features must be divisible by reduction')
 
-        self.linear1 = nn.Linear(n_features, n_features // reduction, bias=False)
-        self.nonlin1 = nn.ReLU(inplace=True)
-        self.linear2 = nn.Linear(n_features // reduction, n_features, bias=False)
-        self.nonlin2 = nn.Sigmoid()
+        self.fc1 = nn.Linear(n_features, n_features // reduction, bias=False)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Linear(n_features // reduction, n_features, bias=False)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
+        b, c, h, w = x.size()
 
-        y = F.avg_pool3d(x, kernel_size=x.size()[2:5])
-        y = y.permute(0, 2, 3, 4, 1)
-        y = self.nonlin1(self.linear1(y))
-        y = self.nonlin2(self.linear2(y))
-        y = y.permute(0, 4, 1, 2, 3)
-        y = x * y
-        return y
+        # Global Average Pooling → (B, C)
+        y = F.adaptive_avg_pool2d(x, 1).view(b, c)
+
+        # Fully connected
+        y = self.relu(self.fc1(y))
+        y = self.sigmoid(self.fc2(y))
+
+        # Reshape → (B, C, 1, 1)
+        y = y.view(b, c, 1, 1)
+
+        return x * y
 
 class UnetUp3_SqEx(nn.Module):
     def __init__(self, in_size, out_size, is_deconv, is_batchnorm):

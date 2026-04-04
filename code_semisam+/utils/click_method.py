@@ -4,25 +4,22 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 
-
-def get_next_click3D_torch(prev_seg, gt_semantic_seg):
-
+def get_next_click2D_torch(prev_seg, gt_semantic_seg):
     mask_threshold = 0.5
-
     batch_points = []
     batch_labels = []
-    # dice_list = []
 
     pred_masks = (prev_seg > mask_threshold)
     true_masks = (gt_semantic_seg > 0)
     fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
     fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
 
-    for i in range(gt_semantic_seg.shape[0]):#, desc="generate points":
-
+    for i in range(gt_semantic_seg.shape[0]):
+        # fn_points shape: (N, 3) -> [channel, h, w]
         fn_points = torch.argwhere(fn_masks[i])
         fp_points = torch.argwhere(fp_masks[i])
         point = None
+        
         if len(fn_points) > 0 and len(fp_points) > 0:
             if np.random.random() > 0.5:
                 point = fn_points[np.random.randint(len(fn_points))]
@@ -36,71 +33,74 @@ def get_next_click3D_torch(prev_seg, gt_semantic_seg):
         elif len(fp_points) > 0:
             point = fp_points[np.random.randint(len(fp_points))]
             is_positive = False
-        # if no mask is given, random click a negative point
+        
         if point is None: 
-            point = torch.Tensor([np.random.randint(sz) for sz in fn_masks[i].size()]).to(torch.int64)
+            # Click đại một điểm nếu không có lỗi (thường là điểm âm)
+            point = torch.tensor([0, np.random.randint(prev_seg.shape[2]), np.random.randint(prev_seg.shape[3])]).to(torch.int64)
             is_positive = False
-        bp = point[1:].clone().detach().reshape(1,1,-1).to(pred_masks.device) 
-        bl = torch.tensor([int(is_positive),]).reshape(1,1).to(pred_masks.device) 
+
+        # Lấy (h, w), bỏ qua channel. Reshape cho SAM 2D: (1, 1, 2)
+        bp = point[1:].clone().detach().reshape(1, 1, 2).to(pred_masks.device) 
+        bl = torch.tensor([int(is_positive),]).reshape(1, 1).to(pred_masks.device) 
 
         batch_points.append(bp)
         batch_labels.append(bl)
 
-    return batch_points, batch_labels # , (sum(dice_list)/len(dice_list)).item()    
+    return batch_points, batch_labels
 
-
-def get_next_click3D_torch_ritm(prev_seg, gt_semantic_seg):
+def get_next_click2D_torch_ritm(prev_seg, gt_semantic_seg):
+    """ Chiến thuật click vào tâm vùng lỗi lớn nhất (RITM) cho 2D """
     mask_threshold = 0.5
-
     batch_points = []
     batch_labels = []
-    # dice_list = []
 
     pred_masks = (prev_seg > mask_threshold)
     true_masks = (gt_semantic_seg > 0)
     fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
     fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
 
-    fn_mask_single = F.pad(fn_masks, (1,1,1,1,1,1), 'constant', value=0).to(torch.uint8)[0,0]
-    fp_mask_single = F.pad(fp_masks, (1,1,1,1,1,1), 'constant', value=0).to(torch.uint8)[0,0]
-    fn_mask_dt = torch.tensor(edt.edt(fn_mask_single.cpu().numpy(), black_border=True, parallel=4))[1:-1, 1:-1, 1:-1]
-    fp_mask_dt = torch.tensor(edt.edt(fp_mask_single.cpu().numpy(), black_border=True, parallel=4))[1:-1, 1:-1, 1:-1]
+    # Pad 2D: (left, right, top, bottom)
+    fn_mask_single = F.pad(fn_masks.float(), (1,1,1,1), 'constant', value=0)[0,0]
+    fp_mask_single = F.pad(fp_masks.float(), (1,1,1,1), 'constant', value=0)[0,0]
+    
+    # Tính Distance Transform 2D
+    fn_mask_dt = torch.tensor(edt.edt(fn_mask_single.cpu().numpy(), black_border=True, parallel=4))[1:-1, 1:-1]
+    fp_mask_dt = torch.tensor(edt.edt(fp_mask_single.cpu().numpy(), black_border=True, parallel=4))[1:-1, 1:-1]
+    
     fn_max_dist = torch.max(fn_mask_dt)
     fp_max_dist = torch.max(fp_mask_dt)
-    is_positive = fn_max_dist > fp_max_dist # the biggest area is selected to be interaction point
+    
+    is_positive = fn_max_dist > fp_max_dist
     dt = fn_mask_dt if is_positive else fp_mask_dt
-    to_point_mask = dt > (max(fn_max_dist, fp_max_dist) / 2.0) # use a erosion area
-    to_point_mask = to_point_mask[None, None]
-    # import pdb; pdb.set_trace()
-
+    
+    to_point_mask = dt > (max(fn_max_dist, fp_max_dist) / 2.0)
+    to_point_mask = to_point_mask[None, None] # Add batch & channel dims
 
     for i in range(gt_semantic_seg.shape[0]):
-        # points = torch.argwhere(to_point_mask[i])
         points = torch.nonzero(to_point_mask[i], as_tuple=False)
-        # points = torch.nonzero(to_point_mask[i], as_tuple=False)  ################
-        point = points[np.random.randint(len(points))]
-        # print('point.shape',point.shape,'='*100)
-        if fn_masks[i, 0, point[0], point[1], point[2]]:
+        if len(points) == 0: # Phòng trường hợp mask trống
+            point = torch.tensor([0, 0, 0])
+        else:
+            point = points[np.random.randint(len(points))]
+        
+        # Kiểm tra lại loại point tại (channel 0, h, w)
+        if fn_masks[i, 0, point[1], point[2]]:
             is_positive = True
         else:
             is_positive = False
 
-        bp = point[1:].clone().detach().reshape(1,1,3) 
-        bl = torch.tensor([int(is_positive),]).reshape(1,1)
+        bp = point[1:].clone().detach().reshape(1, 1, 2).to(prev_seg.device) 
+        bl = torch.tensor([int(is_positive),]).reshape(1, 1).to(prev_seg.device)
         batch_points.append(bp)
         batch_labels.append(bl)
 
-    return batch_points, batch_labels # , (sum(dice_list)/len(dice_list)).item()    
+    return batch_points, batch_labels
 
-
-
-def get_next_click3D_torch_2(prev_seg, gt_semantic_seg):
-
+def get_next_click2D_torch_2(prev_seg, gt_semantic_seg):
+    """ Click ngẫu nhiên vào bất kỳ vùng lỗi nào (FN hoặc FP) """
     mask_threshold = 0.5
-
     batch_points = []
     batch_labels = []
-    # dice_list = []
 
     pred_masks = (prev_seg > mask_threshold)
     true_masks = (gt_semantic_seg > 0)
@@ -110,76 +110,23 @@ def get_next_click3D_torch_2(prev_seg, gt_semantic_seg):
     to_point_mask = torch.logical_or(fn_masks, fp_masks)
 
     for i in range(gt_semantic_seg.shape[0]):
-        # points = torch.argwhere(to_point_mask[i])
         points = torch.nonzero(to_point_mask[i], as_tuple=False)
-        point = points[np.random.randint(len(points))]
-        # import pdb; pdb.set_trace()
-        if fn_masks[i, 0, point[1], point[2], point[3]]:
+        if len(points) == 0:
+            point = torch.tensor([0, 0, 0])
+        else:
+            point = points[np.random.randint(len(points))]
+            
+        if fn_masks[i, 0, point[1], point[2]]:
             is_positive = True
         else:
             is_positive = False
 
-        bp = point[1:].clone().detach().reshape(1,1,3) 
-        bl = torch.tensor([int(is_positive),]).reshape(1,1)
+        bp = point[1:].clone().detach().reshape(1, 1, 2).to(prev_seg.device) 
+        bl = torch.tensor([int(is_positive),]).reshape(1, 1).to(prev_seg.device)
         batch_points.append(bp)
         batch_labels.append(bl)
 
-    return batch_points, batch_labels # , (sum(dice_list)/len(dice_list)).item()    
-
-
-def get_next_click3D_torch_with_dice(prev_seg, gt_semantic_seg):
-
-    def compute_dice(mask_pred, mask_gt):
-        mask_threshold = 0.5
-
-        mask_pred = (mask_pred > mask_threshold)
-        # mask_gt = mask_gt.astype(bool)
-        mask_gt = (mask_gt > 0)
-        
-        volume_sum = mask_gt.sum() + mask_pred.sum()
-        if volume_sum == 0:
-            return np.NaN
-        volume_intersect = (mask_gt & mask_pred).sum()
-        return 2*volume_intersect / volume_sum
-
-    mask_threshold = 0.5
-
-    batch_points = []
-    batch_labels = []
-    dice_list = []
-
-    pred_masks = (prev_seg > mask_threshold)
-    true_masks = (gt_semantic_seg > 0)
-    fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
-    fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
-
-
-    for i in range(gt_semantic_seg.shape[0]):
-
-        fn_points = torch.argwhere(fn_masks[i])
-        fp_points = torch.argwhere(fp_masks[i])
-        if len(fn_points) > 0 and len(fp_points) > 0:
-            if np.random.random() > 0.5:
-                point = fn_points[np.random.randint(len(fn_points))]
-                is_positive = True
-            else:
-                point = fp_points[np.random.randint(len(fp_points))]
-                is_positive = False
-        elif len(fn_points) > 0:
-            point = fn_points[np.random.randint(len(fn_points))]
-            is_positive = True
-        elif len(fp_points) > 0:
-            point = fp_points[np.random.randint(len(fp_points))]
-            is_positive = False
-        # bp = torch.tensor(point[1:]).reshape(1,1,3) 
-        bp = point[1:].clone().detach().reshape(1,1,3) 
-        bl = torch.tensor([int(is_positive),]).reshape(1,1)
-        batch_points.append(bp)
-        batch_labels.append(bl)
-        dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
-
-    return batch_points, batch_labels, (sum(dice_list)/len(dice_list)).item()    
-
+    return batch_points, batch_labels
 
 def show_mask(mask, ax, random_color=False):
     if random_color:
@@ -190,18 +137,19 @@ def show_mask(mask, ax, random_color=False):
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
     ax.imshow(mask_image)
 
-
 def show_point(point, label, ax):
+    # point định dạng (h, w)
     if label == 0:
-        ax.add_patch(plt.Circle((point[1], point[0]), 1, color='red'))
+        ax.add_patch(plt.Circle((point[1], point[0]), 2, color='red')) # Point âm
     else:
-        ax.add_patch(plt.Circle((point[1], point[0]), 1, color='green'))
-    # plt.scatter(point[0], point[1], label=label)
-
-
+        ax.add_patch(plt.Circle((point[1], point[0]), 2, color='green')) # Point dương
 
 if __name__ == "__main__":
-    gt2D = torch.randn((2,1,256, 256)).cuda()
+    # Test thử với tensor 2D
+    gt2D = torch.zeros((2, 1, 256, 256)).cuda()
+    gt2D[:, :, 50:100, 50:100] = 1 # Tạo một vùng mask giả
     prev_masks = torch.zeros_like(gt2D).to(gt2D.device)
-    batch_points, batch_labels = get_next_click3D_torch(prev_masks.to(gt2D.device), gt2D)
-    print(batch_points)
+    
+    batch_points, batch_labels = get_next_click2D_torch_ritm(prev_masks, gt2D)
+    print(f"Points shape: {batch_points[0].shape}") # Kỳ vọng (1, 1, 2)
+    print(f"Labels: {batch_labels}")

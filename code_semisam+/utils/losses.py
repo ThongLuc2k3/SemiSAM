@@ -28,7 +28,7 @@ def dice_loss1(score, target):
 
 
 def entropy_loss(p, C=2):
-    # p N*C*W*H*D
+    
     y1 = -1*torch.sum(p*torch.log(p+1e-6), dim=1) / \
         torch.tensor(np.log(C)).cuda()
     ent = torch.mean(y1)
