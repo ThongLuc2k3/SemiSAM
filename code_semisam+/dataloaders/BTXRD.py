@@ -31,7 +31,7 @@ class BTXRD(Dataset):
         
         # Đọc ảnh và mask (giả định đuôi .png, nếu là .jpg bạn hãy sửa lại)
         img_path = os.path.join(self._base_dir, "images", image_name + ".png")
-        lab_path = os.path.join(self._base_dir, "mask", image_name + ".png")
+        lab_path = os.path.join(self._base_dir, "masks", image_name + ".png")
         
         image = np.array(Image.open(img_path).convert('L')) / 255.0 # Normalize 0-1
         label = np.array(Image.open(lab_path).convert('L'))
