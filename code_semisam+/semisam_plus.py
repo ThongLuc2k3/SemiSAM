@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Chuyển đổi import sang click method 2D
-from utils.click_method2D import get_next_click2D_torch_ritm, get_next_click2D_torch_2
+# Chuyển đổi import sang click method
+from utils.click_method import get_next_click2D_torch_ritm, get_next_click2D_torch_2
 
 def compute_epistemic_uncertainty(all_preds):
 
