@@ -263,11 +263,7 @@ def train(args, snapshot_path, log_file):
                     print(f"🥇 New Best Performance: {best_performance:.4f}", flush=True)
 
                 model.train()
-                if avg_metric[:, 0].mean() > best_performance:
-                    best_performance = avg_metric[:, 0].mean()
-                    save_best = os.path.join(snapshot_path, '{}_best_model.pth'.format(args.model))
-                    torch.save(model.state_dict(), save_best)
-
+                
                 writer.add_scalar('info/val_dice_score', avg_metric[0, 0], iter_num)
                 model.train()
 
