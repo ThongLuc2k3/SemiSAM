@@ -77,7 +77,7 @@ def update_ema_variables(model, ema_model, alpha, global_step):
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
 
-def train(args, snapshot_path):
+def train(args, snapshot_path, log_file):
     base_lr = args.base_lr
     train_data_path = args.root_path
     batch_size = args.batch_size
@@ -183,6 +183,7 @@ def train(args, snapshot_path):
                 sam_model_tune=sam_model_obj, 
                 prompt=args.prompt
             )
+
             # 2. Tạo soft mask (size 2)
             samseg_soft = torch.cat((1 - samseg_mask, samseg_mask), dim=1)
 
@@ -198,6 +199,7 @@ def train(args, snapshot_path):
             else:
                 sam_consistency = torch.mean(
                     (outputs_soft[args.labeled_bs:] - samseg_soft)**2)
+
             consistency_weight_sam = get_current_consistency_weight((max_iterations - iter_num)//150)
             sam_con_loss = 0.1 * consistency_weight_sam * sam_consistency
 
@@ -214,14 +216,19 @@ def train(args, snapshot_path):
 
             iter_num = iter_num + 1
 
-            # THAY iterator.set_description BẰNG LỆNH PRINT NÀY:
-            print(f"Iter {iter_num}/{max_iterations} | "
-                  f"Loss: {loss.item():.4f} | "
-                  f"Dice: {loss_dice.item():.4f} | "
-                  f"CE: {loss_ce.item():.4f} | "
-                  f"SAM: {sam_con_loss.item():.4f} | "
-                  f"LR: {optimizer.param_groups[0]['lr']:.6f}")
-            
+            # Thay thế đoạn print cũ bằng đoạn này:
+            # Tính toán số batch trong 1 epoch (ví dụ 75 iters/epoch)
+            iters_per_epoch = len(trainloader)
+            epoch_num = iter_num // iters_per_epoch
+
+            # Cứ mỗi 50 iterations mới in 1 dòng để tránh spam quá nhiều
+            if iter_num % 50 == 0:
+                log_line = f"Epoch [{epoch_num}] Iter [{iter_num}] | Loss: {loss.item():.4f} | Dice: {loss_dice.item():.4f}\n"
+                print(log_line, end='', flush=True)
+                log_file.write(log_line)
+                log_file.flush() # Đẩy dữ liệu vào ổ đĩa ngay lập tức
+            # Cập nhật thanh tqdm (Chỉ hiện thông tin tổng quát nhất)
+            iterator.set_description(f"Epoch {epoch_num} - Best Dice: {best_performance:.4f}")
             # Logging
             writer.add_scalar('info/total_loss', loss, iter_num)
             writer.add_scalar('info/loss_ce', loss_ce, iter_num)
@@ -238,13 +245,24 @@ def train(args, snapshot_path):
                 image_gt = label_batch[0, :, :].unsqueeze(0)
                 writer.add_image('train/Groundtruth_label', image_gt, iter_num)
 
-            if iter_num > 0 and iter_num % 200 == 0:
+            if iter_num > 0 and iter_num % 50 == 0:
+
+                save_mode_path = os.path.join(snapshot_path, 'unet_latest.pth')
+                torch.save(model.state_dict(), save_mode_path)
+                
                 model.eval()
                 # test_all_case cho 2D: patch_size 2D, không có stride_z
                 avg_metric = test_all_case(
                     model, args.root_path, test_list="val.txt", num_classes=2, patch_size=args.patch_size,
-                    stride_xy=32)
-                
+                    stride_xy=128)
+
+                performance = avg_metric[0, 0]
+                if performance > best_performance:
+                    best_performance = performance
+                    torch.save(model.state_dict(), os.path.join(snapshot_path, 'unet_best_model.pth')) 
+                    print(f"🥇 New Best Performance: {best_performance:.4f}", flush=True)
+
+                model.train()
                 if avg_metric[:, 0].mean() > best_performance:
                     best_performance = avg_metric[:, 0].mean()
                     save_best = os.path.join(snapshot_path, '{}_best_model.pth'.format(args.model))
@@ -277,10 +295,11 @@ if __name__ == "__main__":
 
     snapshot_path = "../model/{}_{}/{}".format(args.exp, args.labeled_num, args.model)
     if not os.path.exists(snapshot_path):
-        os.makedirs(snapshot_path)
-    
+        os.makedirs(snapshot_path, exist_ok=True)
+    # Tạo file log thủ công để chắc chắn ghi được
+    log_file = open(os.path.join(snapshot_path, "train_log.txt"), "a")
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
-    train(args, snapshot_path)
+    train(args, snapshot_path, log_file)
